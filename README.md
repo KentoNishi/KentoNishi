@@ -1,5 +1,5 @@
-![KentoNishi's GitHub Stats]([https://github-readme-stats-fast.vercel.app/api?username=KentoNishi&show_icons=true&theme=dark&hide_border=true)
+![KentoNishi's GitHub Stats](assets/github-stats.svg)
 
-![KentoNishi's GitHub Streak](https://streak-stats.demolab.com/?user=KentoNishi&hide_border=true&theme=dark)
+![KentoNishi's GitHub Streak](assets/github-streak.svg)
 
 ![Profile Views](https://komarev.com/ghpvc/?username=KentoNishi)
