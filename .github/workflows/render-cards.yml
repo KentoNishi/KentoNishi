@@ -3,7 +3,8 @@ name: render cards
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "0 4 * * *"
+    - cron: "0 5 * * *"
 
 permissions:
   contents: write
@@ -16,19 +17,46 @@ jobs:
   render:
     runs-on: ubuntu-latest
     steps:
+      - name: Choose render date
+        id: render_date
+        run: |
+          set -euo pipefail
+          python3 <<'PY' >> "$GITHUB_OUTPUT"
+          import os
+          from datetime import datetime, time, timedelta, timezone
+          from zoneinfo import ZoneInfo
+
+          eastern = ZoneInfo("America/New_York")
+          now = datetime.now(eastern)
+          as_of = datetime.combine(
+              now.date() - timedelta(days=1),
+              time(23, 59, 59),
+              eastern,
+          )
+          should_run = os.environ["GITHUB_EVENT_NAME"] != "schedule" or now.hour == 0
+
+          print(f"should_run={'true' if should_run else 'false'}")
+          print(f"as_of_date={as_of.date().isoformat()}")
+          print(f"as_of_utc={as_of.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}")
+          PY
+
       - uses: actions/checkout@v6
+        if: steps.render_date.outputs.should_run == 'true'
 
       - uses: actions/setup-node@v6
+        if: steps.render_date.outputs.should_run == 'true'
         with:
           node-version: "22"
 
       - uses: shivammathur/setup-php@v2
+        if: steps.render_date.outputs.should_run == 'true'
         with:
           php-version: "8.3"
           extensions: curl, intl
           tools: composer:v2
 
       - name: Clone renderers
+        if: steps.render_date.outputs.should_run == 'true'
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/card-renderers"
@@ -36,8 +64,10 @@ jobs:
           git clone --depth=1 https://github.com/DenverCoder1/github-readme-streak-stats.git "$RUNNER_TEMP/card-renderers/github-readme-streak-stats"
 
       - name: Render GitHub stats
+        if: steps.render_date.outputs.should_run == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARD_AS_OF: ${{ steps.render_date.outputs.as_of_utc }}
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/card-renderers/github-readme-stats"
@@ -46,16 +76,31 @@ jobs:
           node scripts/render-github-stats.mjs "$RUNNER_TEMP/card-renderers/github-readme-stats" "$GITHUB_WORKSPACE/assets/github-stats.svg"
 
       - name: Render GitHub streak
+        if: steps.render_date.outputs.should_run == 'true'
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CARD_AS_OF_DATE: ${{ steps.render_date.outputs.as_of_date }}
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/card-renderers/github-readme-streak-stats"
           composer install --no-dev --prefer-dist --no-interaction --no-progress
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/stats.php")
+          source = path.read_text()
+          needle = '$today = date("Y-m-d");\n    $tomorrow = date("Y-m-d", strtotime("tomorrow"));'
+          replacement = '$asOfDate = $_SERVER["CARD_AS_OF_DATE"] ?? date("Y-m-d");\n    $today = $asOfDate;\n    $tomorrow = "";'
+          if needle not in source:
+              raise SystemExit("could not patch streak stats date cutoff")
+          path.write_text(source.replace(needle, replacement))
+          PY
           cat > router.php <<'PHP'
           <?php
+          date_default_timezone_set("America/New_York");
           $_SERVER["TOKEN"] = getenv("TOKEN") ?: "";
           $_SERVER["DISABLE_CACHE"] = "true";
+          $_SERVER["CARD_AS_OF_DATE"] = getenv("CARD_AS_OF_DATE") ?: "";
           chdir(__DIR__ . "/src");
           require __DIR__ . "/src/index.php";
           PHP
@@ -78,6 +123,7 @@ jobs:
           fi
 
       - name: Commit rendered assets
+        if: steps.render_date.outputs.should_run == 'true'
         run: |
           set -euo pipefail
           if git diff --quiet -- README.md assets/github-stats.svg assets/github-streak.svg; then
