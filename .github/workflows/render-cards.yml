@@ -3,136 +3,117 @@ name: render cards
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 4 * * *"
-    - cron: "0 5 * * *"
+    - cron: "17 0 * * *"
+      timezone: America/New_York
 
 permissions:
   contents: write
 
 concurrency:
   group: render-cards
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   render:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Choose render date
         id: render_date
         run: |
-          set -euo pipefail
           python3 <<'PY' >> "$GITHUB_OUTPUT"
-          import os
+          import sys
           from datetime import datetime, time, timedelta, timezone
           from zoneinfo import ZoneInfo
 
           eastern = ZoneInfo("America/New_York")
           now = datetime.now(eastern)
-          as_of = datetime.combine(
-              now.date() - timedelta(days=1),
-              time(23, 59, 59),
-              eastern,
-          )
-          should_run = os.environ["GITHUB_EVENT_NAME"] != "schedule" or now.hour == 0
-
-          print(f"should_run={'true' if should_run else 'false'}")
+          as_of = datetime.combine(now.date() - timedelta(days=1), time(23, 59, 59), eastern)
           print(f"as_of_date={as_of.date().isoformat()}")
           print(f"as_of_utc={as_of.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}")
+          print(f"Run: {now.isoformat()}; cutoff: {as_of.isoformat()}", file=sys.stderr)
           PY
 
       - uses: actions/checkout@v6
-        if: steps.render_date.outputs.should_run == 'true'
 
       - uses: actions/setup-node@v6
-        if: steps.render_date.outputs.should_run == 'true'
         with:
           node-version: "22"
 
       - uses: shivammathur/setup-php@v2
-        if: steps.render_date.outputs.should_run == 'true'
         with:
           php-version: "8.3"
           extensions: curl, intl
           tools: composer:v2
 
-      - name: Clone renderers
-        if: steps.render_date.outputs.should_run == 'true'
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/card-renderers"
-          git clone --depth=1 https://github.com/anuraghazra/github-readme-stats.git "$RUNNER_TEMP/card-renderers/github-readme-stats"
-          git clone --depth=1 https://github.com/DenverCoder1/github-readme-streak-stats.git "$RUNNER_TEMP/card-renderers/github-readme-streak-stats"
+      - name: Check out stats renderer
+        uses: actions/checkout@v6
+        with:
+          repository: anuraghazra/github-readme-stats
+          ref: 54a7985aeefda00d5eadb55b80c17c7f976c37d2
+          path: renderers/stats
+          persist-credentials: false
+
+      - name: Check out streak renderer
+        uses: actions/checkout@v6
+        with:
+          repository: DenverCoder1/github-readme-streak-stats
+          ref: 9202e37665889fdb42d9a7df8501c1800acf761d
+          path: renderers/streak
+          persist-credentials: false
 
       - name: Render GitHub stats
-        if: steps.render_date.outputs.should_run == 'true'
+        id: stats
+        continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARD_AS_OF: ${{ steps.render_date.outputs.as_of_utc }}
+          FETCH_MULTI_PAGE_STARS: "true"
         run: |
           set -euo pipefail
-          cd "$RUNNER_TEMP/card-renderers/github-readme-stats"
-          npm ci
-          cd "$GITHUB_WORKSPACE"
-          node scripts/render-github-stats.mjs "$RUNNER_TEMP/card-renderers/github-readme-stats" "$GITHUB_WORKSPACE/assets/github-stats.svg"
+          npm ci --prefix renderers/stats --omit=dev --ignore-scripts
+          node scripts/render-github-stats.mjs "$GITHUB_WORKSPACE/renderers/stats" "$RUNNER_TEMP/github-stats.svg"
 
       - name: Render GitHub streak
-        if: steps.render_date.outputs.should_run == 'true'
+        id: streak
+        continue-on-error: true
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CARD_AS_OF_DATE: ${{ steps.render_date.outputs.as_of_date }}
         run: |
           set -euo pipefail
-          cd "$RUNNER_TEMP/card-renderers/github-readme-streak-stats"
-          composer install --no-dev --prefer-dist --no-interaction --no-progress
-          python3 - <<'PY'
-          from pathlib import Path
+          composer install --working-dir=renderers/streak --no-dev --prefer-dist --no-interaction --no-progress
+          php scripts/render-github-streak.php "$GITHUB_WORKSPACE/renderers/streak" "$RUNNER_TEMP/github-streak.svg"
 
-          path = Path("src/stats.php")
-          source = path.read_text()
-          needle = '$today = date("Y-m-d");\n    $tomorrow = date("Y-m-d", strtotime("tomorrow"));'
-          replacement = '$asOfDate = $_SERVER["CARD_AS_OF_DATE"] ?? date("Y-m-d");\n    $today = $asOfDate;\n    $tomorrow = "";'
-          if needle not in source:
-              raise SystemExit("could not patch streak stats date cutoff")
-          path.write_text(source.replace(needle, replacement))
-          PY
-          cat > router.php <<'PHP'
-          <?php
-          date_default_timezone_set("America/New_York");
-          $_SERVER["TOKEN"] = getenv("TOKEN") ?: "";
-          $_SERVER["DISABLE_CACHE"] = "true";
-          $_SERVER["CARD_AS_OF_DATE"] = getenv("CARD_AS_OF_DATE") ?: "";
-          chdir(__DIR__ . "/src");
-          require __DIR__ . "/src/index.php";
-          PHP
-          php -S 127.0.0.1:8099 router.php > "$RUNNER_TEMP/streak-stats.log" 2>&1 &
-          server_pid=$!
-          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
-
-          for attempt in {1..30}; do
-            if curl -fsS "http://127.0.0.1:8099/?user=KentoNishi&hide_border=true&theme=dark" -o "$GITHUB_WORKSPACE/assets/github-streak.svg"; then
-              break
-            fi
-            sleep 1
-          done
-
-          test -s "$GITHUB_WORKSPACE/assets/github-streak.svg"
-          grep -q "<svg" "$GITHUB_WORKSPACE/assets/github-streak.svg"
-          if grep -q "Error lable\\|Something went wrong\\|Missing token\\|User not in whitelist\\|\\.env was not found" "$GITHUB_WORKSPACE/assets/github-streak.svg"; then
-            cat "$RUNNER_TEMP/streak-stats.log"
-            exit 1
-          fi
-
-      - name: Commit rendered assets
-        if: steps.render_date.outputs.should_run == 'true'
+      - name: Commit successful cards
+        env:
+          STATS_RESULT: ${{ steps.stats.outcome }}
+          STREAK_RESULT: ${{ steps.streak.outcome }}
+          CARD_AS_OF_DATE: ${{ steps.render_date.outputs.as_of_date }}
         run: |
           set -euo pipefail
-          if git diff --quiet -- README.md assets/github-stats.svg assets/github-streak.svg; then
-            echo "No card changes."
-            exit 0
-          fi
+          python3 <<'PY'
+          import os
+          from pathlib import Path
+          import shutil
+          import xml.etree.ElementTree as ET
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add README.md assets/github-stats.svg assets/github-streak.svg
-          git commit -m "update profile cards"
-          git push
+          for card in ("stats", "streak"):
+              if os.environ[f"{card.upper()}_RESULT"] != "success":
+                  continue
+              source = Path(os.environ["RUNNER_TEMP"]) / f"github-{card}.svg"
+              if ET.parse(source).getroot().tag != "{http://www.w3.org/2000/svg}svg":
+                  raise SystemExit(f"Invalid SVG: {source}")
+              shutil.copyfile(source, Path("assets") / source.name)
+          PY
+          echo "Through $CARD_AS_OF_DATE: stats=$STATS_RESULT, streak=$STREAK_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          git add assets/github-stats.svg assets/github-streak.svg
+          if ! git diff --cached --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -m "update profile cards through $CARD_AS_OF_DATE"
+            git push
+          fi
+          # Publish a successful card even if the other failed, but keep the run red.
+          test "$STATS_RESULT" = success
+          test "$STREAK_RESULT" = success

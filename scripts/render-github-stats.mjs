@@ -11,17 +11,32 @@ if (!rendererDir || !outputPath) {
 process.chdir(rendererDir);
 process.env.PAT_1 ||= process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
 
+const statsFetcherPath = path.join(rendererDir, "src/fetchers/stats.js");
+let statsFetcher = await fs.readFile(statsFetcherPath, "utf8");
+
+const replaceOnce = (source, needle, replacement) => {
+  if (!source.includes(needle)) {
+    if (source.includes(replacement)) return source;
+    throw new Error(`could not patch github-readme-stats: ${needle}`);
+  }
+  return source.replace(needle, replacement);
+};
+
+// Only the public count is needed; listing stargazers requires extra token access.
+statsFetcher = replaceOnce(
+  statsFetcher,
+  "stargazers {\n        totalCount\n      }",
+  "stargazerCount",
+);
+for (const variable of ["node", "curr"]) {
+  statsFetcher = replaceOnce(
+    statsFetcher,
+    `${variable}.stargazers.totalCount`,
+    `${variable}.stargazerCount`,
+  );
+}
+
 if (process.env.CARD_AS_OF) {
-  const statsFetcherPath = path.join(rendererDir, "src/fetchers/stats.js");
-  let statsFetcher = await fs.readFile(statsFetcherPath, "utf8");
-
-  const replaceOnce = (source, needle, replacement) => {
-    if (!source.includes(needle)) {
-      throw new Error(`could not patch github-readme-stats: ${needle}`);
-    }
-    return source.replace(needle, replacement);
-  };
-
   statsFetcher = replaceOnce(
     statsFetcher,
     "$startTime: DateTime = null) {",
@@ -42,9 +57,9 @@ if (process.env.CARD_AS_OF) {
     "      startTime,\n    };",
     "      startTime,\n      endTime: process.env.CARD_AS_OF,\n    };",
   );
-
-  await fs.writeFile(statsFetcherPath, statsFetcher);
 }
+
+await fs.writeFile(statsFetcherPath, statsFetcher);
 
 const { default: renderStats } = await import(
   pathToFileURL(path.join(rendererDir, "api/index.js"))
