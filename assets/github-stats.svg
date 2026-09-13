@@ -9,7 +9,7 @@
         aria-labelledby="descId"
       >
         <title id="titleId">Kento Nishi's GitHub Stats, Rank: A+</title>
-        <desc id="descId">Total Stars Earned: 606, Total Commits  (last year) : 1376, Total PRs: 179, Total Issues: 76, Contributed to (last year): 6</desc>
+        <desc id="descId">Total Stars Earned: 606, Total Commits  (last year) : 1380, Total PRs: 179, Total Issues: 76, Contributed to (last year): 6</desc>
         <style>
           .header {
             font: 600 18px 'Segoe UI', Ubuntu, Sans-Serif;
@@ -73,7 +73,7 @@
         stroke-dashoffset: 251.32741228718345;
       }
       to {
-        stroke-dashoffset: 21.135148228237234;
+        stroke-dashoffset: 21.124967966532438;
       }
     }
   
